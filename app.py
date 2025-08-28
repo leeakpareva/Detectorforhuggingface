@@ -942,36 +942,117 @@ if st.session_state.processing_complete and st.session_state.last_results:
         
         # Show corrections interface if we have detailed attributes
         if detailed_attributes and st.session_state.get('current_image'):
-            correction_data = []
-            
-            for i, attr in enumerate(detailed_attributes):
-                with st.expander(f"🔧 Correct Detection #{i+1}: {attr['label']} ({attr['confidence']})"):
-                    col1, col2, col3 = st.columns([2, 2, 1])
+            # Create horizontal layout for all detections
+            num_detections = len(detailed_attributes)
+            if num_detections <= 3:
+                cols = st.columns(num_detections)
+            else:
+                # If more than 3 detections, create rows of 3
+                rows_needed = (num_detections + 2) // 3  # Ceiling division
+                for row in range(rows_needed):
+                    start_idx = row * 3
+                    end_idx = min(start_idx + 3, num_detections)
+                    num_items_in_row = end_idx - start_idx
+                    cols = st.columns(num_items_in_row)
                     
-                    with col1:
-                        st.text(f"**Detected:** {attr['label']}")
-                        st.text(f"**Confidence:** {attr['confidence']}")
-                        st.text(f"**Colors:** {', '.join(attr['colors'][:2])}")
-                        st.text(f"**Position:** {attr['position']}")
-                        st.text(f"**Size:** {attr['size']}")
-                    
-                    with col2:
+                    for col_idx, i in enumerate(range(start_idx, end_idx)):
+                        attr = detailed_attributes[i]
+                        
+                        with cols[col_idx]:
+                            st.markdown(f"**🔧 Detection #{i+1}**")
+                            st.markdown(f"**{attr['label']}** ({attr['confidence']})")
+                            
+                            # Show detection details compactly
+                            st.caption(f"Colors: {', '.join(attr['colors'][:2])}")
+                            st.caption(f"Position: {attr['position']} | Size: {attr['size']}")
+                            
+                            # Correction input
+                            correct_label = st.text_input(
+                                "Correct label:", 
+                                key=f"correct_{i}",
+                                placeholder="e.g., rabbit, dog, car",
+                                label_visibility="collapsed"
+                            )
+                            
+                            feedback_text = st.text_input(
+                                "Feedback (optional):", 
+                                key=f"feedback_{i}",
+                                placeholder="Why was this wrong?",
+                                label_visibility="collapsed"
+                            )
+                            
+                            if st.button(f"Submit", key=f"submit_correction_{i}", use_container_width=True):
+                                if correct_label.strip():
+                                    # Extract object region from image
+                                    image_array = np.array(st.session_state.current_image)
+                                    
+                                    # Get bounding box coordinates from detailed attributes
+                                    bbox_coords = attr.get('bbox', [100, 100, 200, 200])  # [x1, y1, x2, y2]
+                                    
+                                    # Extract object crop
+                                    x1, y1, x2, y2 = bbox_coords
+                                    object_crop = image_array[max(0, int(y1)):min(image_array.shape[0], int(y2)),
+                                                            max(0, int(x1)):min(image_array.shape[1], int(x2))]
+                                    
+                                    if object_crop.size > 0:
+                                        # Save correction to database
+                                        try:
+                                            success = db.save_correction(
+                                                image_crop=object_crop,
+                                                bbox_coords=bbox_coords,
+                                                yolo_prediction=attr['label'],
+                                                yolo_confidence=float(attr['confidence'].rstrip('%')) / 100.0,
+                                                correct_label=correct_label.strip(),
+                                                user_feedback=feedback_text.strip(),
+                                                session_id=st.session_state.get('session_id', '')
+                                            )
+                                            
+                                            if success:
+                                                st.success(f"✅ Saved!")
+                                                st.balloons()
+                                                
+                                                # Update training stats
+                                                if 'training_corrections' not in st.session_state:
+                                                    st.session_state.training_corrections = 0
+                                                st.session_state.training_corrections += 1
+                                            else:
+                                                st.error("❌ Failed to save.")
+                                        except Exception as e:
+                                            st.error(f"❌ Error: {e}")
+                                    else:
+                                        st.error("❌ Could not extract object.")
+                                else:
+                                    st.warning("⚠️ Enter correct label.")
+                
+                # Exit the loop since we handled all detections
+                pass
+            else:
+                # Handle case with 3 or fewer detections
+                for i, attr in enumerate(detailed_attributes):
+                    with cols[i]:
+                        st.markdown(f"**🔧 Detection #{i+1}**")
+                        st.markdown(f"**{attr['label']}** ({attr['confidence']})")
+                        
+                        # Show detection details compactly
+                        st.caption(f"Colors: {', '.join(attr['colors'][:2])}")
+                        st.caption(f"Position: {attr['position']} | Size: {attr['size']}")
+                        
                         # Correction input
                         correct_label = st.text_input(
                             "Correct label:", 
                             key=f"correct_{i}",
-                            placeholder="e.g., rabbit, dog, car"
+                            placeholder="e.g., rabbit, dog, car",
+                            label_visibility="collapsed"
                         )
                         
-                        feedback_text = st.text_area(
-                            "Additional feedback (optional):", 
+                        feedback_text = st.text_input(
+                            "Feedback (optional):", 
                             key=f"feedback_{i}",
-                            placeholder="Why was this incorrect?",
-                            height=68
+                            placeholder="Why was this wrong?",
+                            label_visibility="collapsed"
                         )
-                    
-                    with col3:
-                        if st.button(f"Submit Correction", key=f"submit_correction_{i}"):
+                        
+                        if st.button(f"Submit", key=f"submit_correction_{i}", use_container_width=True):
                             if correct_label.strip():
                                 # Extract object region from image
                                 image_array = np.array(st.session_state.current_image)
@@ -998,7 +1079,7 @@ if st.session_state.processing_complete and st.session_state.last_results:
                                         )
                                         
                                         if success:
-                                            st.success(f"✅ Correction saved! The AI will learn from this.")
+                                            st.success(f"✅ Saved!")
                                             st.balloons()
                                             
                                             # Update training stats
@@ -1006,13 +1087,13 @@ if st.session_state.processing_complete and st.session_state.last_results:
                                                 st.session_state.training_corrections = 0
                                             st.session_state.training_corrections += 1
                                         else:
-                                            st.error("❌ Failed to save correction. Please try again.")
+                                            st.error("❌ Failed to save.")
                                     except Exception as e:
-                                        st.error(f"❌ Error saving correction: {e}")
+                                        st.error(f"❌ Error: {e}")
                                 else:
-                                    st.error("❌ Could not extract object region from image.")
+                                    st.error("❌ Could not extract object.")
                             else:
-                                st.warning("⚠️ Please enter a correct label.")
+                                st.warning("⚠️ Enter correct label.")
         
         # Training Statistics
         if db:
