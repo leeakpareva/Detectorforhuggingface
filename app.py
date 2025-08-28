@@ -22,6 +22,7 @@ try:
     from backend.recognition import recognition_system
     from backend.database import db
     from backend.chat_agent import chat_with_agent, reset_chat, get_chat_history
+    from backend.two_stage_inference import two_stage_inference
 except ImportError as e:
     st.error(f"⚠️ Import error: {e}")
     st.error("📦 Please install dependencies: pip install -r requirements.txt")
@@ -224,14 +225,21 @@ def process_image(image, enable_voice=False, enable_face_detection=False, enable
         # Convert PIL to numpy array
         image_array = np.array(image)
         
-        # Object detection - use enhanced or standard
+        # Object detection - use two-stage inference, enhanced, or standard
         detailed_attributes = None
         if use_enhanced:
             try:
-                detected_img, detected_objects, detailed_attributes = detect_objects_enhanced(image_array, confidence_threshold)
+                # Try two-stage inference first (YOLO + Custom Model)
+                detected_img, detected_objects, detailed_attributes = two_stage_inference.detect_with_custom_model(
+                    image_array, confidence_threshold
+                )
             except:
-                # Fallback to standard detection
-                detected_img, detected_objects = detect_objects(image_array)
+                try:
+                    # Fallback to enhanced YOLO only
+                    detected_img, detected_objects, detailed_attributes = detect_objects_enhanced(image_array, confidence_threshold)
+                except:
+                    # Final fallback to standard detection
+                    detected_img, detected_objects = detect_objects(image_array)
         else:
             detected_img, detected_objects = detect_objects(image_array)
         
@@ -562,9 +570,20 @@ with col2:
     # Processing options
     st.markdown("### ⚙️ Processing Options")
     
+    # Model information
+    model_info = two_stage_inference.get_model_info()
+    if model_info.get('custom_model_loaded'):
+        st.success(f"🧠 Custom Model Active: {model_info.get('num_custom_classes', 0)} trained classes")
+        with st.expander("📋 Model Details"):
+            st.text(f"Custom Classes: {', '.join(model_info.get('custom_classes', []))}")
+            st.text(f"Training Samples: {model_info.get('training_samples', 0)}")
+            st.text(f"Device: {model_info.get('device', 'unknown')}")
+    else:
+        st.info("🤖 Using YOLO only - Train custom model by providing corrections!")
+    
     # Enhanced accuracy controls
     st.markdown("#### 🎯 Accuracy Settings")
-    use_enhanced = st.checkbox("**Use Enhanced Detection** (Better Accuracy)", value=True, help="Uses advanced model with color detection")
+    use_enhanced = st.checkbox("**Use Enhanced Detection** (Better Accuracy)", value=True, help="Uses advanced model with color detection and custom training")
     confidence_threshold = st.slider("Detection Confidence", 0.1, 0.9, 0.5, 0.05, help="Higher = fewer but more accurate detections")
     
     # Make voice option more prominent
@@ -916,6 +935,131 @@ if st.session_state.processing_complete and st.session_state.last_results:
                     st.markdown(f"• **{name}**: {similarity:.2f} confidence")
                 else:
                     st.markdown(f"• **{name}**: New face detected")
+        
+        # Training Feedback Section
+        st.markdown("### 🧠 Help Improve Detection Accuracy")
+        st.markdown("Found an incorrect detection? Help train the AI by providing corrections!")
+        
+        # Show corrections interface if we have detailed attributes
+        if detailed_attributes and st.session_state.get('current_image'):
+            correction_data = []
+            
+            for i, attr in enumerate(detailed_attributes):
+                with st.expander(f"🔧 Correct Detection #{i+1}: {attr['label']} ({attr['confidence']})"):
+                    col1, col2, col3 = st.columns([2, 2, 1])
+                    
+                    with col1:
+                        st.text(f"**Detected:** {attr['label']}")
+                        st.text(f"**Confidence:** {attr['confidence']}")
+                        st.text(f"**Colors:** {', '.join(attr['colors'][:2])}")
+                        st.text(f"**Position:** {attr['position']}")
+                        st.text(f"**Size:** {attr['size']}")
+                    
+                    with col2:
+                        # Correction input
+                        correct_label = st.text_input(
+                            "Correct label:", 
+                            key=f"correct_{i}",
+                            placeholder="e.g., rabbit, dog, car"
+                        )
+                        
+                        feedback_text = st.text_area(
+                            "Additional feedback (optional):", 
+                            key=f"feedback_{i}",
+                            placeholder="Why was this incorrect?",
+                            height=60
+                        )
+                    
+                    with col3:
+                        if st.button(f"Submit Correction", key=f"submit_correction_{i}"):
+                            if correct_label.strip():
+                                # Extract object region from image
+                                image_array = np.array(st.session_state.current_image)
+                                
+                                # Get bounding box coordinates from detailed attributes
+                                bbox_coords = attr.get('bbox', [100, 100, 200, 200])  # [x1, y1, x2, y2]
+                                
+                                # Extract object crop
+                                x1, y1, x2, y2 = bbox_coords
+                                object_crop = image_array[max(0, int(y1)):min(image_array.shape[0], int(y2)),
+                                                        max(0, int(x1)):min(image_array.shape[1], int(x2))]
+                                
+                                if object_crop.size > 0:
+                                    # Save correction to database
+                                    try:
+                                        success = db.save_correction(
+                                            image_crop=object_crop,
+                                            bbox_coords=bbox_coords,
+                                            yolo_prediction=attr['label'],
+                                            yolo_confidence=float(attr['confidence'].rstrip('%')) / 100.0,
+                                            correct_label=correct_label.strip(),
+                                            user_feedback=feedback_text.strip(),
+                                            session_id=st.session_state.get('session_id', '')
+                                        )
+                                        
+                                        if success:
+                                            st.success(f"✅ Correction saved! The AI will learn from this.")
+                                            st.balloons()
+                                            
+                                            # Update training stats
+                                            if 'training_corrections' not in st.session_state:
+                                                st.session_state.training_corrections = 0
+                                            st.session_state.training_corrections += 1
+                                        else:
+                                            st.error("❌ Failed to save correction. Please try again.")
+                                    except Exception as e:
+                                        st.error(f"❌ Error saving correction: {e}")
+                                else:
+                                    st.error("❌ Could not extract object region from image.")
+                            else:
+                                st.warning("⚠️ Please enter a correct label.")
+        
+        # Training Statistics
+        if db:
+            training_stats = db.get_training_stats()
+            if training_stats.get('total_corrections', 0) > 0:
+                st.markdown("### 📊 Training Progress")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Corrections", training_stats.get('total_corrections', 0))
+                with col2:
+                    st.metric("Unique Classes", training_stats.get('unique_classes', 0))
+                with col3:
+                    st.metric("Recent (7 days)", training_stats.get('recent_corrections', 0))
+                with col4:
+                    st.metric("Avg Difficulty", f"{training_stats.get('average_difficulty', 0):.2f}")
+                
+                # Show class distribution
+                if training_stats.get('class_distribution'):
+                    st.markdown("**Class Distribution:**")
+                    for class_name, count in list(training_stats['class_distribution'].items())[:5]:
+                        st.text(f"• {class_name}: {count} samples")
+                
+                # Training trigger
+                if training_stats.get('total_corrections', 0) >= 10:
+                    if st.button("🚀 Train Custom Model", key="train_model"):
+                        with st.spinner("Training custom classifier... This may take a few minutes."):
+                            # Import training module
+                            from backend.custom_trainer import custom_trainer
+                            
+                            # Get training data
+                            training_data = db.get_training_data(limit=1000)
+                            
+                            if len(training_data) >= 10:
+                                # Train model
+                                result = custom_trainer.train_model(training_data, epochs=10, batch_size=8)
+                                
+                                if result['success']:
+                                    st.success(f"✅ Model trained successfully! Accuracy: {result['best_accuracy']:.2%}")
+                                    st.info("The new model will be used for future detections.")
+                                    
+                                    # Save model info to database (implement this method)
+                                    # db.save_model_version(result)
+                                else:
+                                    st.error(f"❌ Training failed: {result.get('error', 'Unknown error')}")
+                            else:
+                                st.warning("⚠️ Need at least 10 corrections to start training.")
         
         # Debug information
         with st.expander("🔍 Debug Information"):

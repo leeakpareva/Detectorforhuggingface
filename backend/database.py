@@ -97,6 +97,60 @@ class NAVADADatabase:
                     )
                 """)
                 
+                # Create training corrections table for active learning
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS training_corrections (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        image_path TEXT,
+                        image_crop BLOB NOT NULL,
+                        bbox_coords TEXT NOT NULL,
+                        yolo_prediction TEXT NOT NULL,
+                        yolo_confidence REAL NOT NULL,
+                        correct_label TEXT NOT NULL,
+                        user_feedback TEXT,
+                        difficulty_score REAL DEFAULT 0.0,
+                        validated BOOLEAN DEFAULT 0,
+                        used_for_training BOOLEAN DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        session_id TEXT,
+                        metadata TEXT
+                    )
+                """)
+                
+                # Create custom model versions table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS model_versions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        version_name TEXT NOT NULL UNIQUE,
+                        model_path TEXT NOT NULL,
+                        accuracy REAL,
+                        precision_score REAL,
+                        recall_score REAL,
+                        f1_score REAL,
+                        training_samples INTEGER DEFAULT 0,
+                        validation_samples INTEGER DEFAULT 0,
+                        training_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        is_active BOOLEAN DEFAULT 0,
+                        performance_metrics TEXT,
+                        training_config TEXT,
+                        notes TEXT
+                    )
+                """)
+                
+                # Create custom classes mapping
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS custom_classes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        class_name TEXT NOT NULL UNIQUE,
+                        yolo_class TEXT,
+                        sample_count INTEGER DEFAULT 0,
+                        confidence_threshold REAL DEFAULT 0.5,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        is_active BOOLEAN DEFAULT 1,
+                        description TEXT
+                    )
+                """)
+                
                 # Create indexes for better performance
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_faces_name ON faces(name)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_objects_label ON objects(label)")
@@ -414,6 +468,206 @@ class NAVADADatabase:
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
             return {}
+    
+    # Training Corrections Methods for Active Learning
+    
+    def save_correction(self, image_crop: np.ndarray, bbox_coords: List[float], 
+                       yolo_prediction: str, yolo_confidence: float, 
+                       correct_label: str, user_feedback: str = "", 
+                       session_id: str = "") -> bool:
+        """
+        Save a user correction for training
+        
+        Args:
+            image_crop: Cropped image of the detected object
+            bbox_coords: [x1, y1, x2, y2] bounding box coordinates
+            yolo_prediction: Original YOLO predicted label
+            yolo_confidence: Original YOLO confidence score
+            correct_label: User-provided correct label
+            user_feedback: Optional user feedback text
+            session_id: Session identifier
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            # Convert image to bytes
+            _, buffer = cv2.imencode('.jpg', image_crop)
+            image_bytes = buffer.tobytes()
+            
+            # Calculate difficulty score (lower confidence = higher difficulty)
+            difficulty_score = 1.0 - yolo_confidence
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    INSERT INTO training_corrections 
+                    (image_crop, bbox_coords, yolo_prediction, yolo_confidence, 
+                     correct_label, user_feedback, difficulty_score, session_id, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    image_bytes,
+                    json.dumps(bbox_coords),
+                    yolo_prediction,
+                    yolo_confidence,
+                    correct_label,
+                    user_feedback,
+                    difficulty_score,
+                    session_id,
+                    json.dumps({
+                        'timestamp': datetime.now().isoformat(),
+                        'image_shape': image_crop.shape,
+                        'correction_type': 'user_feedback'
+                    })
+                ))
+                
+                # Update or create custom class entry
+                cursor.execute("""
+                    INSERT OR IGNORE INTO custom_classes (class_name, yolo_class, sample_count)
+                    VALUES (?, ?, 0)
+                """, (correct_label, yolo_prediction))
+                
+                cursor.execute("""
+                    UPDATE custom_classes 
+                    SET sample_count = sample_count + 1 
+                    WHERE class_name = ?
+                """, (correct_label,))
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to save correction: {e}")
+            return False
+    
+    def get_training_data(self, class_name: str = None, limit: int = 1000, 
+                         validated_only: bool = False) -> List[Dict]:
+        """
+        Retrieve training data for model training
+        
+        Args:
+            class_name: Filter by specific class (optional)
+            limit: Maximum number of samples to return
+            validated_only: Only return validated corrections
+            
+        Returns:
+            List of training samples
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                query = """
+                    SELECT id, image_crop, bbox_coords, yolo_prediction, 
+                           yolo_confidence, correct_label, difficulty_score, 
+                           created_at, metadata
+                    FROM training_corrections 
+                    WHERE 1=1
+                """
+                params = []
+                
+                if class_name:
+                    query += " AND correct_label = ?"
+                    params.append(class_name)
+                
+                if validated_only:
+                    query += " AND validated = 1"
+                
+                query += " ORDER BY difficulty_score DESC, created_at DESC LIMIT ?"
+                params.append(limit)
+                
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                
+                training_data = []
+                for row in rows:
+                    # Decode image
+                    image_bytes = row[1]
+                    image_array = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+                    
+                    training_data.append({
+                        'id': row[0],
+                        'image': image_array,
+                        'bbox_coords': json.loads(row[2]),
+                        'yolo_prediction': row[3],
+                        'yolo_confidence': row[4],
+                        'correct_label': row[5],
+                        'difficulty_score': row[6],
+                        'created_at': row[7],
+                        'metadata': json.loads(row[8]) if row[8] else {}
+                    })
+                
+                return training_data
+                
+        except Exception as e:
+            logger.error(f"Failed to get training data: {e}")
+            return []
+    
+    def get_training_stats(self) -> Dict:
+        """Get statistics about training corrections"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Total corrections
+                cursor.execute("SELECT COUNT(*) FROM training_corrections")
+                total_corrections = cursor.fetchone()[0]
+                
+                # Corrections by class
+                cursor.execute("""
+                    SELECT correct_label, COUNT(*) as count
+                    FROM training_corrections 
+                    GROUP BY correct_label 
+                    ORDER BY count DESC
+                """)
+                class_counts = dict(cursor.fetchall())
+                
+                # Validated corrections
+                cursor.execute("SELECT COUNT(*) FROM training_corrections WHERE validated = 1")
+                validated_count = cursor.fetchone()[0]
+                
+                # Recent corrections (last 7 days)
+                cursor.execute("""
+                    SELECT COUNT(*) FROM training_corrections 
+                    WHERE created_at > datetime('now', '-7 days')
+                """)
+                recent_corrections = cursor.fetchone()[0]
+                
+                # Average difficulty score
+                cursor.execute("SELECT AVG(difficulty_score) FROM training_corrections")
+                avg_difficulty = cursor.fetchone()[0] or 0.0
+                
+                return {
+                    'total_corrections': total_corrections,
+                    'validated_corrections': validated_count,
+                    'recent_corrections': recent_corrections,
+                    'class_distribution': class_counts,
+                    'average_difficulty': round(avg_difficulty, 3),
+                    'unique_classes': len(class_counts)
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get training stats: {e}")
+            return {}
+    
+    def mark_corrections_used(self, correction_ids: List[int]) -> bool:
+        """Mark corrections as used for training"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                placeholders = ','.join(['?'] * len(correction_ids))
+                cursor.execute(f"""
+                    UPDATE training_corrections 
+                    SET used_for_training = 1 
+                    WHERE id IN ({placeholders})
+                """, correction_ids)
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to mark corrections as used: {e}")
+            return False
 
 # Global database instance
 try:
