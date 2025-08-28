@@ -5,13 +5,13 @@ Streamlit Version for Hugging Face Spaces Deployment
 Enhanced Edition by Lee Akpareva | AI Consultant & Computer Vision Specialist
 """
 
-import streamlit as st
+import streamlit as st # type: ignore
 import time
 from datetime import datetime
-import plotly.graph_objects as go
-import plotly.express as px
-from PIL import Image
-import numpy as np
+import plotly.graph_objects as go # type: ignore
+import plotly.express as px # type: ignore
+from PIL import Image # type: ignore
+import numpy as np # type: ignore
 
 # Backend imports
 try:

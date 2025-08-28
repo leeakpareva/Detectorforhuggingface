@@ -3,7 +3,10 @@ from openai import OpenAI # type: ignore
 import tempfile
 
 # Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("OPENAI_API_KEY environment variable is required but not set")
+client = OpenAI(api_key=api_key)
 
 def explain_detection(objects_list):
     """
