@@ -967,7 +967,7 @@ if st.session_state.processing_complete and st.session_state.last_results:
                             "Additional feedback (optional):", 
                             key=f"feedback_{i}",
                             placeholder="Why was this incorrect?",
-                            height=60
+                            height=68
                         )
                     
                     with col3:
