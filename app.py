@@ -5,21 +5,23 @@ Streamlit Version for Hugging Face Spaces Deployment
 Enhanced Edition by Lee Akpareva | AI Consultant & Computer Vision Specialist
 """
 
-import streamlit as st
+import streamlit as st # type: ignore
 import time
 from datetime import datetime
-import plotly.graph_objects as go
-import plotly.express as px
-from PIL import Image
-import numpy as np
+import plotly.graph_objects as go # type: ignore
+import plotly.express as px # type: ignore
+from PIL import Image # type: ignore
+import numpy as np # type: ignore
 
 # Backend imports
 try:
-    from backend.yolo import detect_objects
+    from backend.yolo_enhanced import detect_objects_enhanced, get_intelligence_report
+    from backend.yolo import detect_objects  # Keep original for fallback
     from backend.openai_client import explain_detection, generate_voice
     from backend.face_detection import face_detector
     from backend.recognition import recognition_system
     from backend.database import db
+    from backend.chat_agent import chat_with_agent, reset_chat, get_chat_history
 except ImportError as e:
     st.error(f"⚠️ Import error: {e}")
     st.error("📦 Please install dependencies: pip install -r requirements.txt")
@@ -119,6 +121,10 @@ if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
 if 'last_results' not in st.session_state:
     st.session_state.last_results = None
+if 'chat_messages' not in st.session_state:
+    st.session_state.chat_messages = []
+if 'use_enhanced' not in st.session_state:
+    st.session_state.use_enhanced = True
 
 def create_detection_chart(detected_objects, face_stats=None, face_matches=None):
     """Create an interactive chart showing detection statistics"""
@@ -207,19 +213,27 @@ def create_confidence_pie_chart(detected_objects, face_matches=None):
     except:
         return None
 
-def process_image(image, enable_voice=False, enable_face_detection=False, enable_recognition=False):
+def process_image(image, enable_voice=False, enable_face_detection=False, enable_recognition=False, use_enhanced=True, confidence_threshold=0.5):
     """Process uploaded image with all NAVADA 2.0 features"""
     try:
         if image is None:
-            return None, "No image provided", None, None, None
+            return None, "No image provided", None, None, None, None
             
         start_time = time.time()
         
         # Convert PIL to numpy array
         image_array = np.array(image)
         
-        # Object detection
-        detected_img, detected_objects = detect_objects(image_array)
+        # Object detection - use enhanced or standard
+        detailed_attributes = None
+        if use_enhanced:
+            try:
+                detected_img, detected_objects, detailed_attributes = detect_objects_enhanced(image_array, confidence_threshold)
+            except:
+                # Fallback to standard detection
+                detected_img, detected_objects = detect_objects(image_array)
+        else:
+            detected_img, detected_objects = detect_objects(image_array)
         
         # Face detection if enabled
         face_stats = None
@@ -231,8 +245,11 @@ def process_image(image, enable_voice=False, enable_face_detection=False, enable
             if enable_recognition and recognition_system:
                 detected_img, face_matches = recognition_system.recognize_faces(detected_img)
         
-        # AI explanation
-        ai_explanation = explain_detection(detected_objects)
+        # AI explanation - enhanced version includes detailed attributes
+        if detailed_attributes:
+            ai_explanation = get_intelligence_report(detailed_attributes)
+        else:
+            ai_explanation = explain_detection(detected_objects)
         
         # RAG enhancement if recognition enabled
         if enable_recognition and recognition_system:
@@ -261,11 +278,11 @@ def process_image(image, enable_voice=False, enable_face_detection=False, enable
                 image_array, detected_objects, face_matches, processing_time
             )
         
-        return detected_img, ai_explanation, detected_objects, face_stats, face_matches, audio_file
+        return detected_img, ai_explanation, detected_objects, face_stats, face_matches, audio_file, detailed_attributes
         
     except Exception as e:
         st.error(f"Processing failed: {e}")
-        return None, f"Error: {e}", [], None, None, None
+        return None, f"Error: {e}", [], None, None, None, None
 
 def get_database_stats():
     """Get current database statistics"""
@@ -545,6 +562,11 @@ with col2:
     # Processing options
     st.markdown("### ⚙️ Processing Options")
     
+    # Enhanced accuracy controls
+    st.markdown("#### 🎯 Accuracy Settings")
+    use_enhanced = st.checkbox("**Use Enhanced Detection** (Better Accuracy)", value=True, help="Uses advanced model with color detection")
+    confidence_threshold = st.slider("Detection Confidence", 0.1, 0.9, 0.5, 0.05, help="Higher = fewer but more accurate detections")
+    
     # Make voice option more prominent
     st.markdown("#### 🔊 Audio Features")
     enable_voice = st.checkbox("**Enable Voice Narration** (OpenAI TTS)", value=False, help="Generate AI voice explanation of detected objects")
@@ -567,7 +589,9 @@ with col2:
                     st.session_state.current_image,
                     enable_voice,
                     enable_face_detection,
-                    enable_recognition
+                    enable_recognition,
+                    use_enhanced,
+                    confidence_threshold
                 )
                 st.session_state.last_results = results
                 st.session_state.processing_complete = True
@@ -576,7 +600,12 @@ with col2:
 
 # Results section
 if st.session_state.processing_complete and st.session_state.last_results:
-    detected_img, ai_explanation, detected_objects, face_stats, face_matches, audio_file = st.session_state.last_results
+    # Unpack results - handle both old and new format
+    if len(st.session_state.last_results) == 7:
+        detected_img, ai_explanation, detected_objects, face_stats, face_matches, audio_file, detailed_attributes = st.session_state.last_results
+    else:
+        detected_img, ai_explanation, detected_objects, face_stats, face_matches, audio_file = st.session_state.last_results
+        detailed_attributes = None
     
     st.markdown("---")
     st.markdown("## 🎯 Analysis Results")
@@ -893,6 +922,67 @@ if st.session_state.processing_complete and st.session_state.last_results:
             st.text(f"Detected objects list: {detected_objects}")
             st.text(f"Face stats: {face_stats}")
             st.text(f"Face matches: {face_matches}")
+            if detailed_attributes:
+                st.text(f"Detailed attributes: {detailed_attributes}")
+    
+    # AI Chat Agent Section
+    st.markdown("---")
+    st.markdown("## 💬 AI Chat Assistant")
+    st.markdown("Ask questions about the detected objects or have a conversation about the image!")
+    
+    # Chat interface
+    chat_col1, chat_col2 = st.columns([4, 1])
+    
+    with chat_col1:
+        user_message = st.text_input("Your message:", key="chat_input", placeholder="Ask about colors, positions, objects...")
+    
+    with chat_col2:
+        col1, col2 = st.columns(2)
+        with col1:
+            send_button = st.button("Send 💬", key="send_chat")
+        with col2:
+            clear_button = st.button("Clear 🔄", key="clear_chat")
+    
+    # Voice option for chat
+    enable_chat_voice = st.checkbox("🔊 Enable voice responses for chat", value=True, key="chat_voice")
+    
+    # Process chat
+    if send_button and user_message:
+        with st.spinner("Thinking..."):
+            # Update chat agent with current detection context
+            if 'last_results' in st.session_state and st.session_state.last_results:
+                if len(st.session_state.last_results) == 7:
+                    _, _, detected_objs, _, _, _, detailed_attrs = st.session_state.last_results
+                    response, voice_file = chat_with_agent(
+                        user_message, 
+                        detected_objs, 
+                        detailed_attrs, 
+                        enable_chat_voice
+                    )
+                else:
+                    response, voice_file = chat_with_agent(user_message, include_voice=enable_chat_voice)
+            else:
+                response, voice_file = chat_with_agent(user_message, include_voice=enable_chat_voice)
+            
+            # Add to chat history
+            st.session_state.chat_messages.append({"role": "user", "content": user_message})
+            st.session_state.chat_messages.append({"role": "assistant", "content": response, "voice": voice_file})
+    
+    if clear_button:
+        st.session_state.chat_messages = []
+        reset_chat()
+        st.rerun()
+    
+    # Display chat history
+    if st.session_state.chat_messages:
+        st.markdown("### 💭 Conversation")
+        for msg in st.session_state.chat_messages:
+            if msg["role"] == "user":
+                st.markdown(f"**You:** {msg['content']}")
+            else:
+                st.markdown(f"**NAVADA:** {msg['content']}")
+                if msg.get("voice"):
+                    st.audio(msg["voice"], format="audio/mp3")
 
 # Footer
 st.markdown("---")
