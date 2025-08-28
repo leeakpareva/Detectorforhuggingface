@@ -6,7 +6,7 @@ import cv2 # type: ignore
 import numpy as np # type: ignore
 from collections import Counter
 import webcolors
-from sklearn.cluster import KMeans # type: ignore
+# from sklearn.cluster import KMeans # type: ignore  # Temporarily disabled due to numpy compatibility
 import torch # type: ignore
 
 # Load a more accurate YOLO model
@@ -20,30 +20,42 @@ NMS_THRESHOLD = 0.45  # Non-maximum suppression threshold
 
 def get_dominant_colors(image, n_colors=3):
     """
-    Extract dominant colors from an image region using K-means clustering
+    Extract dominant colors from an image region using simple averaging
+    (K-means temporarily disabled due to numpy compatibility)
     """
     try:
-        # Reshape image to be a list of pixels
-        pixels = image.reshape((-1, 3))
+        # Simple color detection without sklearn
+        # Get average color
+        avg_color = np.mean(image.reshape(-1, 3), axis=0).astype(int)
         
-        # Apply K-means to find dominant colors
-        kmeans = KMeans(n_clusters=min(n_colors, len(pixels)), random_state=42)
-        kmeans.fit(pixels)
+        # Get corners for variety
+        h, w = image.shape[:2]
+        corners = [
+            image[0, 0],  # Top-left
+            image[0, w-1] if w > 0 else image[0, 0],  # Top-right
+            image[h-1, 0] if h > 0 else image[0, 0],  # Bottom-left
+            image[h//2, w//2] if h > 0 and w > 0 else image[0, 0]  # Center
+        ]
         
-        # Get the colors
-        colors = kmeans.cluster_centers_.astype(int)
-        
-        # Get color names
         color_names = []
-        for color in colors:
-            try:
-                # Find closest named color
-                closest_name = get_color_name(color)
-                color_names.append(closest_name)
-            except:
-                color_names.append(f"RGB({color[0]},{color[1]},{color[2]})")
+        # Add average color
+        try:
+            color_names.append(get_color_name(avg_color))
+        except:
+            color_names.append(f"RGB({avg_color[0]},{avg_color[1]},{avg_color[2]})")
         
-        return color_names
+        # Add dominant corner color if different
+        for corner in corners[:n_colors-1]:
+            try:
+                name = get_color_name(corner)
+                if name not in color_names:
+                    color_names.append(name)
+                    if len(color_names) >= n_colors:
+                        break
+            except:
+                pass
+        
+        return color_names if color_names else ["Unknown"]
     except:
         return ["Unknown"]
 
