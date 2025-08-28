@@ -1,14 +1,14 @@
-import gradio as gr
-from backend.yolo import detect_objects
-from backend.openai_client import explain_detection, generate_voice
-from backend.face_detection import face_detector
-import os
-from datetime import datetime
-import plotly.graph_objects as go
-import plotly.express as px
-import json
-import requests
-import time
+try:
+    import gradio as gr
+    from backend.yolo import detect_objects
+    from backend.openai_client import explain_detection, generate_voice
+    from backend.face_detection import face_detector
+    from datetime import datetime
+    import plotly.graph_objects as go
+except ImportError as e:
+    print(f"⚠️ Import error: {e}")
+    print("📦 Please install dependencies: pip install -r requirements.txt")
+    raise
 
 def create_detection_chart(detected_objects, face_stats):
     """Create an interactive chart showing detection statistics"""
@@ -140,7 +140,6 @@ def process_image(image, enable_voice=False, enable_face_detection=False):
         audio_file = generate_voice(explanation)
     
     # Create statistics
-    total_objects = len(detected_objects) + (face_stats['total_faces'] if face_stats else 0)
     stats = f"📊 **Detection Stats**\n"
     stats += f"- Total Objects: {len(detected_objects)}\n"
     if face_stats:
@@ -478,4 +477,31 @@ with gr.Blocks(title="NAVADA - AI Vision", css=custom_css, theme=gr.themes.Soft(
     )
 
 if __name__ == "__main__":
-    demo.launch(share=True, server_name="0.0.0.0", server_port=7860)
+    # Find available port
+    import socket
+    def find_free_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            return s.getsockname()[1]
+    
+    port = 7860
+    try:
+        # Test if port is available
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('0.0.0.0', port))
+    except OSError:
+        port = find_free_port()
+        print(f"🔄 Port 7860 in use, using port {port} instead")
+    
+    # Try to launch with share=True, fallback to local if tunneling fails
+    try:
+        print("🚀 Starting NAVADA with public link...")
+        demo.launch(share=True, server_name="0.0.0.0", server_port=port)
+    except Exception as e:
+        print(f"⚠️ Public link failed: {e}")
+        print("🏠 Starting in local mode...")
+        print(f"💡 To create a public link manually:")
+        print(f"   1. Install ngrok: https://ngrok.com/")
+        print(f"   2. Run: ngrok http {port}")
+        print(f"   3. Use the provided ngrok URL")
+        demo.launch(share=False, server_name="0.0.0.0", server_port=port)
