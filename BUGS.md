@@ -10,13 +10,13 @@
 
 | Category | Total | Fixed | Open | Critical |
 |----------|-------|-------|------|----------|
-| **UI/UX Issues** | 8 | 8 | 0 | 2 |
+| **UI/UX Issues** | 9 | 9 | 0 | 2 |
 | **Backend Errors** | 6 | 6 | 0 | 3 |
 | **Dependencies** | 4 | 4 | 0 | 1 |
 | **Performance** | 3 | 3 | 0 | 0 |
 | **Database Issues** | 2 | 2 | 0 | 1 |
 | **Deployment** | 3 | 3 | 0 | 0 |
-| **Total** | **26** | **26** | **0** | **7** |
+| **Total** | **27** | **27** | **0** | **7** |
 
 ---
 
@@ -287,6 +287,25 @@ BadRequestError: Invalid input at sdk
 - Database operations: <50ms average
 - Improved face recognition speed
 - Better concurrent access handling
+
+### 17. **Plotly Radar Chart Error**
+- **Severity**: 🔴 Critical
+- **Status**: ✅ Fixed
+- **Date**: 2025-08-28
+
+**Error:**
+```
+AttributeError: module 'plotly.graph_objects' has no attribute 'Radar'
+```
+
+**Root Cause**: Incorrect Plotly API usage - `go.Radar` doesn't exist
+
+**Fix Applied:**
+- Changed `go.Radar()` to `go.Scatterpolar()` for radar charts
+- Updated line styling from `line_color` to `line=dict(color=...)`
+- Maintains same visual appearance with correct API
+
+**Files Modified**: `app.py`
 
 ---
 

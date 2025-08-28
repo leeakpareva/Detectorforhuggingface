@@ -11,7 +11,8 @@
       "mcp__ide__getDiagnostics",
       "Bash(taskkill:*)",
       "Bash(pip install:*)",
-      "Bash(streamlit run:*)"
+      "Bash(streamlit run:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

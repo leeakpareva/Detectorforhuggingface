@@ -814,19 +814,19 @@ if st.session_state.processing_complete and st.session_state.last_results:
                 }
                 
                 comparison_chart = go.Figure()
-                comparison_chart.add_trace(go.Radar(
+                comparison_chart.add_trace(go.Scatterpolar(
                     r=[94, 95, 90, 98],  # NAVADA 2.0 capabilities
                     theta=['Accuracy', 'Speed', 'Features', 'Innovation'],
                     fill='toself',
                     name='NAVADA 2.0',
-                    line_color='#4ECDC4'
+                    line=dict(color='#4ECDC4')
                 ))
-                comparison_chart.add_trace(go.Radar(
+                comparison_chart.add_trace(go.Scatterpolar(
                     r=[89, 92, 60, 70],  # Standard models
                     theta=['Accuracy', 'Speed', 'Features', 'Innovation'],
                     fill='toself',
                     name='Standard Models',
-                    line_color='#FF6B6B'
+                    line=dict(color='#FF6B6B')
                 ))
                 
                 comparison_chart.update_layout(
