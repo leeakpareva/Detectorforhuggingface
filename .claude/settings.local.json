@@ -3,7 +3,15 @@
     "allow": [
       "Bash(git init:*)",
       "Bash(git remote add:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git config:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(python:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(taskkill:*)",
+      "Bash(pip install:*)",
+      "Bash(streamlit run:*)"
     ],
     "deny": [],
     "ask": []

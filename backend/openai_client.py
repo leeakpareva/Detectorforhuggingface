@@ -1,5 +1,5 @@
 import os
-from openai import OpenAI
+from openai import OpenAI # type: ignore
 import tempfile
 
 # Initialize OpenAI client
