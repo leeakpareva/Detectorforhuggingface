@@ -843,20 +843,18 @@ if st.session_state.processing_complete and st.session_state.last_results:
             
             # System capabilities matrix
             st.markdown("### ⚡ System Capabilities")
-            capabilities = {
-                'Feature': ['Object Detection', 'Face Recognition', 'Custom Training', 
-                           'Voice Narration', 'RAG Analysis', 'Real-time Processing'],
-                'Status': ['✅ Active', '✅ Active', '✅ Active', 
-                          '✅ Active', '✅ Active', '✅ Active'],
-                'Performance': ['94%', '91%', '89%', '96%', '87%', '92%']
-            }
             
-            cap_df = {
-                '🎯 Feature': capabilities['Feature'],
-                '📊 Status': capabilities['Status'], 
-                '⚡ Performance': capabilities['Performance']
-            }
-            st.table(cap_df)
+            # Create manual table to avoid pandas import
+            st.markdown("""
+            | 🎯 Feature | 📊 Status | ⚡ Performance |
+            |------------|-----------|----------------|
+            | Object Detection | ✅ Active | 94% |
+            | Face Recognition | ✅ Active | 91% |
+            | Custom Training | ✅ Active | 89% |
+            | Voice Narration | ✅ Active | 96% |
+            | RAG Analysis | ✅ Active | 87% |
+            | Real-time Processing | ✅ Active | 92% |
+            """)
     
     with res_col2:
         # Charts

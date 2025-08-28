@@ -7,7 +7,7 @@ Deploy NAVADA to Hugging Face Spaces with Streamlit
 import os
 import shutil
 from pathlib import Path
-from huggingface_hub import HfApi, create_repo
+from huggingface_hub import HfApi, create_repo # type: ignore
 from dotenv import load_dotenv
 
 # Load environment variables

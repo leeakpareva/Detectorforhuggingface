@@ -12,17 +12,17 @@
 |----------|-------|-------|------|----------|
 | **UI/UX Issues** | 9 | 9 | 0 | 2 |
 | **Backend Errors** | 6 | 6 | 0 | 3 |
-| **Dependencies** | 4 | 4 | 0 | 1 |
+| **Dependencies** | 5 | 5 | 0 | 2 |
 | **Performance** | 3 | 3 | 0 | 0 |
 | **Database Issues** | 2 | 2 | 0 | 1 |
 | **Deployment** | 3 | 3 | 0 | 0 |
-| **Total** | **27** | **27** | **0** | **7** |
+| **Total** | **28** | **28** | **0** | **8** |
 
 ---
 
 ## 🔥 Critical Issues (Resolved)
 
-### 1. **Numpy/Pandas Binary Compatibility Error** 
+### 1. **Numpy/Pandas Binary Compatibility Error**
 - **Severity**: 🔴 Critical
 - **Status**: ✅ Fixed
 - **Date**: 2025-08-28
@@ -304,6 +304,26 @@ AttributeError: module 'plotly.graph_objects' has no attribute 'Radar'
 - Changed `go.Radar()` to `go.Scatterpolar()` for radar charts
 - Updated line styling from `line_color` to `line=dict(color=...)`
 - Maintains same visual appearance with correct API
+
+**Files Modified**: `app.py`
+
+### 4. **Streamlit Table Pandas Import Error**
+- **Severity**: 🔴 Critical
+- **Status**: ✅ Fixed
+- **Date**: 2025-08-28
+
+**Error:**
+```
+ValueError: numpy.dtype size changed, may indicate binary incompatibility. 
+Expected 96 from C header, got 88 from PyObject (in st.table())
+```
+
+**Root Cause**: `st.table()` triggers pandas import which has numpy compatibility issues
+
+**Fix Applied:**
+- Replaced `st.table(cap_df)` with manual markdown table
+- Eliminated pandas dependency for capabilities display
+- Maintains same visual appearance without pandas import
 
 **Files Modified**: `app.py`
 
