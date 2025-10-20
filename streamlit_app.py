@@ -16,10 +16,12 @@ import numpy as np # type: ignore
 # Backend imports
 try:
     from backend.yolo import detect_objects
+    from backend.yolo_enhanced import detect_objects_enhanced, get_intelligence_report
     from backend.openai_client import explain_detection, generate_voice
     from backend.face_detection import face_detector
     from backend.recognition import recognition_system
     from backend.database import db
+    from backend.two_stage_inference import two_stage_inference
 except ImportError as e:
     st.error(f"⚠️ Import error: {e}")
     st.error("📦 Please install dependencies: pip install -r requirements.txt")
@@ -176,69 +178,128 @@ def create_detection_chart(detected_objects, face_stats=None, face_matches=None)
     
     return fig
 
-def create_confidence_pie_chart(detected_objects, face_matches=None):
-    """Create a confidence distribution pie chart"""
+def create_confidence_pie_chart(detection_details, face_matches=None):
+    """Create a confidence distribution chart using actual model scores"""
     try:
-        # This is a simplified version - in the full app you'd get actual confidence scores
-        categories = list(set(detected_objects)) if detected_objects else []
+        confidence_map = {}
+
+        for attr in detection_details or []:
+            label = attr.get('label', 'Unknown')
+            conf_value = attr.get('confidence', 0.0)
+            if isinstance(conf_value, str):
+                conf_value = conf_value.replace('%', '').strip()
+                try:
+                    conf_value = float(conf_value) / 100.0
+                except ValueError:
+                    conf_value = 0.0
+
+            confidence_map.setdefault(label, []).append(float(conf_value))
+
         if face_matches:
-            categories.extend([match['name'] for match in face_matches if match['name'] != 'Unknown'])
-        
-        if not categories:
+            for match in face_matches:
+                name = match.get('name', 'Unknown')
+                if name == 'Unknown':
+                    continue
+                similarity = float(match.get('similarity', 0.0))
+                confidence_map.setdefault(name, []).append(similarity)
+
+        if not confidence_map:
             return None
-            
-        # Generate sample confidence data
-        values = [len([obj for obj in detected_objects if obj == cat]) for cat in set(detected_objects)]
-        
-        fig = go.Figure(data=[go.Pie(
-            labels=list(set(detected_objects)),
-            values=values,
-            hole=.3,
-            marker_colors=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57']
-        )])
-        
+
+        labels = []
+        avg_confidences = []
+        for label, values in confidence_map.items():
+            if not values:
+                continue
+            labels.append(label)
+            avg_confidences.append(sum(values) / len(values) * 100.0)
+
+        if not labels:
+            return None
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=labels,
+            y=avg_confidences,
+            marker_color=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#A29BFE', '#FDA7DF'][:len(labels)],
+            text=[f"{conf:.1f}%" for conf in avg_confidences],
+            textposition='auto'
+        ))
+
         fig.update_layout(
-            title="📊 Detection Distribution",
+            title="📊 Average Confidence by Entity",
+            yaxis_title="Confidence (%)",
+            xaxis_title="Entity",
             height=400,
             template="plotly_dark"
         )
-        
+
         return fig
-    except:
+    except Exception:
         return None
 
-def process_image(image, enable_voice=False, enable_face_detection=False, enable_recognition=False):
+def process_image(image, enable_voice=False, enable_face_detection=False,
+                  enable_recognition=False, confidence_threshold=0.5):
     """Process uploaded image with all NAVADA 2.0 features"""
     try:
         if image is None:
-            return None, "No image provided", None, None, None
-            
+            return {
+                "image": None,
+                "explanation": "No image provided",
+                "objects": [],
+                "face_stats": None,
+                "face_matches": None,
+                "audio": None,
+                "detection_details": [],
+                "processing_time": 0.0
+            }
+
         start_time = time.time()
-        
+
         # Convert PIL to numpy array
         image_array = np.array(image)
-        
-        # Object detection
-        detected_img, detected_objects = detect_objects(image_array)
-        
+
+        # Object detection with fallbacks
+        detected_img = image_array.copy()
+        detected_objects = []
+        detection_details = []
+
+        try:
+            detected_img, detected_objects, detection_details = two_stage_inference.detect_with_custom_model(
+                image_array, confidence_threshold
+            )
+        except Exception:
+            try:
+                detected_img, detected_objects, detection_details = detect_objects_enhanced(
+                    image_array, confidence_threshold
+                )
+            except Exception:
+                detected_img, detected_objects = detect_objects(image_array)
+                detection_details = []
+
         # Face detection if enabled
         face_stats = None
         face_matches = None
         if enable_face_detection and face_detector:
             detected_img, face_stats = face_detector.detect_faces(detected_img)
-            
+
             # Face recognition if enabled
             if enable_recognition and recognition_system:
-                detected_img, face_matches = recognition_system.recognize_faces(detected_img)
-        
-        # AI explanation
-        ai_explanation = explain_detection(detected_objects)
-        
+                detected_img, face_matches = recognition_system.recognize_faces(
+                    detected_img, face_stats
+                )
+
+        # AI explanation with enhanced attributes when available
+        if detection_details:
+            ai_explanation = get_intelligence_report(detection_details)
+        else:
+            ai_explanation = explain_detection(detected_objects)
+
         # RAG enhancement if recognition enabled
         if enable_recognition and recognition_system:
             rag_enhancement = recognition_system.enhance_with_rag(detected_objects, face_matches)
             ai_explanation = f"{ai_explanation}\n\n{rag_enhancement}"
-        
+
         # Voice generation if enabled
         audio_file = None
         if enable_voice:
@@ -253,19 +314,41 @@ def process_image(image, enable_voice=False, enable_face_detection=False, enable
                 st.error(f"❌ Voice generation failed: {e}")
                 import traceback
                 st.error(f"Details: {traceback.format_exc()}")
-        
+
         # Save session data
         processing_time = time.time() - start_time
         if recognition_system:
             recognition_system.save_session_data(
-                image_array, detected_objects, face_matches, processing_time
+                image_array,
+                detected_objects,
+                face_matches,
+                detection_details,
+                processing_time
             )
-        
-        return detected_img, ai_explanation, detected_objects, face_stats, face_matches, audio_file
-        
+
+        return {
+            "image": detected_img,
+            "explanation": ai_explanation,
+            "objects": detected_objects,
+            "face_stats": face_stats,
+            "face_matches": face_matches,
+            "audio": audio_file,
+            "detection_details": detection_details,
+            "processing_time": processing_time
+        }
+
     except Exception as e:
         st.error(f"Processing failed: {e}")
-        return None, f"Error: {e}", [], None, None, None
+        return {
+            "image": None,
+            "explanation": f"Error: {e}",
+            "objects": [],
+            "face_stats": None,
+            "face_matches": None,
+            "audio": None,
+            "detection_details": [],
+            "processing_time": 0.0
+        }
 
 def get_database_stats():
     """Get current database statistics"""
@@ -430,11 +513,34 @@ with st.sidebar:
     # Face database addition
     st.markdown("### 👤 Add Face to Database")
     face_name = st.text_input("Enter person's name:", key="face_name")
+    available_faces = []
+    selected_face_region = None
+    if st.session_state.get('last_results'):
+        last_face_stats = st.session_state.last_results.get('face_stats')
+        if last_face_stats and last_face_stats.get('faces'):
+            for idx, face in enumerate(last_face_stats['faces'], start=1):
+                pos = face.get('position', {})
+                label = f"Face {idx} — {pos.get('width', 0)}x{pos.get('height', 0)}"
+                available_faces.append((label, (pos.get('x', 0), pos.get('y', 0), pos.get('width', 0), pos.get('height', 0))))
+
+    if available_faces:
+        face_map = dict(available_faces)
+        face_option_labels = list(face_map.keys())
+        chosen_face_label = st.selectbox(
+            "Use detected face from last analysis (optional)",
+            ["Auto-select"] + face_option_labels,
+            key="face_region_select"
+        )
+        if chosen_face_label != "Auto-select":
+            selected_face_region = face_map[chosen_face_label]
+
     if st.button("👤 Add Face", key="add_face"):
         if st.session_state.get('current_image') is not None and face_name:
             if recognition_system:
                 success = recognition_system.add_new_face(
-                    np.array(st.session_state.current_image), face_name
+                    np.array(st.session_state.current_image),
+                    face_name,
+                    face_region=selected_face_region
                 )
                 if success:
                     st.success(f"✅ Added {face_name} to face database!")
@@ -461,7 +567,7 @@ with st.sidebar:
         
         total_objects_detected = 0
         if 'last_results' in st.session_state and st.session_state.last_results:
-            detected_objects = st.session_state.last_results[2]
+            detected_objects = st.session_state.last_results.get('objects', [])
             total_objects_detected = len(detected_objects) if detected_objects else 0
         
         st.metric("🎯 Objects Found", 
@@ -496,13 +602,43 @@ with st.sidebar:
     st.markdown("### 🏷️ Add Custom Object")
     object_label = st.text_input("Object label:", key="object_label")
     object_category = st.text_input("Category (optional):", key="object_category")
+    selected_detection_bbox = None
+    detected_options = []
+    if st.session_state.get('last_results'):
+        last_details = st.session_state.last_results.get('detection_details', [])
+        for idx, attr in enumerate(last_details, start=1):
+            bbox = attr.get('bbox')
+            if bbox:
+                label = attr.get('label', 'object')
+                confidence = attr.get('confidence_display') or f"{float(attr.get('confidence', 0.0))*100:.1f}%"
+                option_label = f"{label.title()} #{idx} — {confidence}"
+                detected_options.append((option_label, bbox))
+
+    if detected_options:
+        detection_map = dict(detected_options)
+        detection_labels = list(detection_map.keys())
+        chosen_detection = st.selectbox(
+            "Use detected object from last analysis (optional)",
+            ["Full image"] + detection_labels,
+            key="object_detection_select"
+        )
+        if chosen_detection != "Full image":
+            bbox = detection_map[chosen_detection]
+            selected_detection_bbox = (
+                bbox.get('x1', 0),
+                bbox.get('y1', 0),
+                bbox.get('width', 0),
+                bbox.get('height', 0)
+            )
+
     if st.button("🏷️ Add Object", key="add_object"):
         if st.session_state.get('current_image') is not None and object_label:
             if recognition_system:
                 success = recognition_system.add_custom_object(
-                    np.array(st.session_state.current_image), 
-                    object_label, 
-                    object_category or "general"
+                    np.array(st.session_state.current_image),
+                    object_label,
+                    object_category or "general",
+                    bbox=selected_detection_bbox
                 )
                 if success:
                     st.success(f"✅ Added '{object_label}' to object database!")
@@ -535,11 +671,138 @@ with col1:
     
     with tab2:
         camera_image = st.camera_input("📸 Take a picture")
-        
+
         if camera_image is not None:
             image = Image.open(camera_image)
             st.session_state.current_image = image
             st.image(image, caption="Captured Image", use_container_width=True)
+
+            image_bytes = camera_image.getvalue()
+            image_array = np.array(image)
+
+            # Cache detection results for the captured frame
+            last_capture_bytes = st.session_state.get('camera_last_capture')
+            if last_capture_bytes != image_bytes:
+                st.session_state.camera_last_capture = image_bytes
+                st.session_state.camera_detection_details = []
+                st.session_state.camera_detection_preview = None
+                st.session_state.camera_face_stats = None
+
+                try:
+                    preview_img, _, detection_details = detect_objects_enhanced(image_array)
+                except Exception:
+                    preview_img, _ = detect_objects(image_array)
+                    detection_details = []
+
+                st.session_state.camera_detection_details = detection_details
+                st.session_state.camera_detection_preview = preview_img
+
+                if face_detector:
+                    _, face_stats = face_detector.detect_faces(image_array)
+                    st.session_state.camera_face_stats = face_stats
+
+            if st.session_state.get('camera_detection_preview') is not None:
+                st.image(
+                    st.session_state.camera_detection_preview,
+                    caption="Detection Preview",
+                    use_container_width=True
+                )
+
+            st.markdown("#### ⚡ Quick Enroll")
+
+            # Face enrollment from camera
+            cam_face_name = st.text_input("Name for captured face", key="camera_face_name")
+            cam_face_region = None
+            camera_faces = st.session_state.get('camera_face_stats', {}) or {}
+            face_entries = camera_faces.get('faces', []) if isinstance(camera_faces, dict) else []
+            if face_entries:
+                camera_face_labels = []
+                camera_face_map = {}
+                for idx, face in enumerate(face_entries, start=1):
+                    pos = face.get('position', {})
+                    label = f"Face {idx} — {pos.get('width', 0)}x{pos.get('height', 0)}"
+                    camera_face_labels.append(label)
+                    camera_face_map[label] = (
+                        pos.get('x', 0),
+                        pos.get('y', 0),
+                        pos.get('width', 0),
+                        pos.get('height', 0)
+                    )
+
+                chosen_cam_face = st.selectbox(
+                    "Select face to save (optional)",
+                    ["Auto-select"] + camera_face_labels,
+                    key="camera_face_select"
+                )
+                if chosen_cam_face != "Auto-select":
+                    cam_face_region = camera_face_map[chosen_cam_face]
+
+            if st.button("💾 Save Captured Face", key="camera_save_face"):
+                if cam_face_name:
+                    if recognition_system:
+                        success = recognition_system.add_new_face(
+                            image_array,
+                            cam_face_name,
+                            face_region=cam_face_region
+                        )
+                        if success:
+                            st.success(f"✅ Saved face '{cam_face_name}'.")
+                        else:
+                            st.error("❌ Unable to save face. Please ensure a face is visible.")
+                    else:
+                        st.error("Recognition system not available")
+                else:
+                    st.warning("Please enter a name for the face.")
+
+            # Object enrollment from camera
+            cam_object_label = st.text_input("Label for captured object", key="camera_object_label")
+            cam_object_category = st.text_input("Category", key="camera_object_category")
+            cam_detection_details = st.session_state.get('camera_detection_details', []) or []
+            cam_selected_bbox = None
+            if cam_detection_details:
+                camera_detection_labels = []
+                camera_detection_map = {}
+                for idx, attr in enumerate(cam_detection_details, start=1):
+                    bbox = attr.get('bbox')
+                    if not bbox:
+                        continue
+                    label = attr.get('label', 'object')
+                    confidence = attr.get('confidence_display') or f"{float(attr.get('confidence', 0.0))*100:.1f}%"
+                    option = f"{label.title()} #{idx} — {confidence}"
+                    camera_detection_labels.append(option)
+                    camera_detection_map[option] = (
+                        bbox.get('x1', 0),
+                        bbox.get('y1', 0),
+                        bbox.get('width', 0),
+                        bbox.get('height', 0)
+                    )
+
+                if camera_detection_labels:
+                    chosen_cam_detection = st.selectbox(
+                        "Select detection to save (optional)",
+                        ["Full image"] + camera_detection_labels,
+                        key="camera_object_select"
+                    )
+                    if chosen_cam_detection != "Full image":
+                        cam_selected_bbox = camera_detection_map[chosen_cam_detection]
+
+            if st.button("💾 Save Captured Object", key="camera_save_object"):
+                if cam_object_label:
+                    if recognition_system:
+                        success = recognition_system.add_custom_object(
+                            image_array,
+                            cam_object_label,
+                            cam_object_category or "general",
+                            bbox=cam_selected_bbox
+                        )
+                        if success:
+                            st.success(f"✅ Saved object '{cam_object_label}'.")
+                        else:
+                            st.error("❌ Unable to save object. Try selecting a detection region.")
+                    else:
+                        st.error("Recognition system not available")
+                else:
+                    st.warning("Please provide a label for the object.")
 
 with col2:
     # Processing options
@@ -576,7 +839,15 @@ with col2:
 
 # Results section
 if st.session_state.processing_complete and st.session_state.last_results:
-    detected_img, ai_explanation, detected_objects, face_stats, face_matches, audio_file = st.session_state.last_results
+    results = st.session_state.last_results
+    detected_img = results.get('image')
+    ai_explanation = results.get('explanation', '')
+    detected_objects = results.get('objects', [])
+    face_stats = results.get('face_stats')
+    face_matches = results.get('face_matches')
+    audio_file = results.get('audio')
+    detection_details = results.get('detection_details', [])
+    result_processing_time = results.get('processing_time', 0.0)
     
     st.markdown("---")
     st.markdown("## 🎯 Analysis Results")
@@ -603,7 +874,9 @@ if st.session_state.processing_complete and st.session_state.last_results:
         st.markdown("## 📊 NAVADA 2.0 Analytics Dashboard")
         
         # Get processing stats for current session
-        processing_time = time.time() - st.session_state.get('start_time', time.time())
+        processing_time = result_processing_time or (
+            time.time() - st.session_state.get('start_time', time.time())
+        )
         
         # Create statistics tabs
         stats_tab1, stats_tab2, stats_tab3, stats_tab4 = st.tabs([
@@ -724,25 +997,28 @@ if st.session_state.processing_complete and st.session_state.last_results:
         
         with stats_tab3:
             # Detection Statistics
-            if detected_objects:
-                # Object category distribution
+            if detection_details:
+                st.markdown("### 🎯 Detection Breakdown")
+
                 object_categories = {
                     'Animals': ['bird', 'dog', 'cat', 'horse', 'elephant', 'bear', 'zebra', 'giraffe'],
                     'Vehicles': ['car', 'truck', 'bus', 'motorcycle', 'bicycle', 'airplane', 'boat'],
                     'People': ['person'],
                     'Objects': ['bottle', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'book', 'laptop']
                 }
-                
+
                 category_counts = {}
-                for obj in detected_objects:
+                for attr in detection_details:
+                    label = attr.get('label', 'Unknown')
+                    matched = False
                     for category, items in object_categories.items():
-                        if obj in items:
+                        if label in items:
                             category_counts[category] = category_counts.get(category, 0) + 1
+                            matched = True
                             break
-                    else:
+                    if not matched:
                         category_counts['Other'] = category_counts.get('Other', 0) + 1
-                
-                # Category pie chart
+
                 if category_counts:
                     category_chart = go.Figure(data=[go.Pie(
                         labels=list(category_counts.keys()),
@@ -750,28 +1026,34 @@ if st.session_state.processing_complete and st.session_state.last_results:
                         hole=.4,
                         marker_colors=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3']
                     )])
-                    
+
                     category_chart.update_layout(
                         title="🎯 Object Categories Detected",
                         height=350,
                         template="plotly_dark"
                     )
                     st.plotly_chart(category_chart, use_container_width=True)
-                
-                # Confidence levels radar chart
-                confidence_levels = {
-                    'High Confidence (>90%)': len([obj for obj in detected_objects]) * 0.7,
-                    'Medium Confidence (70-90%)': len([obj for obj in detected_objects]) * 0.25,
-                    'Low Confidence (<70%)': len([obj for obj in detected_objects]) * 0.05
-                }
-                
+
+                def _parse_conf(value):
+                    if isinstance(value, str):
+                        value = value.replace('%', '').strip()
+                        try:
+                            return float(value) / 100.0
+                        except ValueError:
+                            return 0.0
+                    return float(value)
+
+                high = sum(1 for attr in detection_details if _parse_conf(attr.get('confidence', 0.0)) >= 0.9)
+                medium = sum(1 for attr in detection_details if 0.7 <= _parse_conf(attr.get('confidence', 0.0)) < 0.9)
+                low = sum(1 for attr in detection_details if _parse_conf(attr.get('confidence', 0.0)) < 0.7)
+
                 confidence_chart = go.Figure()
                 confidence_chart.add_trace(go.Bar(
-                    x=list(confidence_levels.keys()),
-                    y=list(confidence_levels.values()),
+                    x=['High Confidence (>90%)', 'Medium Confidence (70-90%)', 'Low Confidence (<70%)'],
+                    y=[high, medium, low],
                     marker_color=['#4CAF50', '#FFC107', '#FF5722']
                 ))
-                
+
                 confidence_chart.update_layout(
                     title="🎯 Detection Confidence Distribution",
                     xaxis_title="Confidence Level",
@@ -780,7 +1062,7 @@ if st.session_state.processing_complete and st.session_state.last_results:
                     template="plotly_dark"
                 )
                 st.plotly_chart(confidence_chart, use_container_width=True)
-            
+
             else:
                 st.info("📸 Upload an image to see detection statistics!")
         
@@ -840,10 +1122,44 @@ if st.session_state.processing_complete and st.session_state.last_results:
                     template="plotly_dark"
                 )
                 st.plotly_chart(comparison_chart, use_container_width=True)
-            
+
+            st.markdown("---")
+
+            # Recent detection history and knowledge insights
+            st.markdown("### 🕒 Recent Detection History")
+            recent_history = db.get_recent_detection_history(limit=5) if db else []
+            if recent_history:
+                for entry in recent_history:
+                    timestamp = entry.get('created_at', 'Unknown time')
+                    detections = entry.get('detections', []) or []
+                    summary = ', '.join(sorted(set(detections))) if detections else 'No detections recorded'
+                    confidence = entry.get('confidence_scores') or {}
+                    object_conf = confidence.get('objects') or []
+                    avg_object_conf = (
+                        sum(item.get('confidence', 0.0) for item in object_conf) / len(object_conf)
+                        if object_conf else 0.0
+                    )
+                    st.markdown(
+                        f"**{timestamp}** — {summary}<br><small>Avg object confidence: {avg_object_conf*100:.1f}%</small>",
+                        unsafe_allow_html=True
+
+                    )
+            else:
+                st.info("No detection history available yet.")
+
+            st.markdown("### 📚 Knowledge Base Highlights")
+            knowledge_entries = db.get_recent_knowledge_entries(limit=5) if db else []
+            if knowledge_entries:
+                for entry in knowledge_entries:
+                    st.markdown(
+                        f"• **{entry.get('entity_type', 'entity').title()} {entry.get('entity_id', '')}**: {entry.get('content', '')}"  # noqa: E501
+                    )
+            else:
+                st.info("Knowledge base is awaiting new entries.")
+
             # System capabilities matrix
             st.markdown("### ⚡ System Capabilities")
-            
+
             # Create manual table to avoid pandas import
             st.markdown("""
             | 🎯 Feature | 📊 Status | ⚡ Performance |
@@ -862,15 +1178,26 @@ if st.session_state.processing_complete and st.session_state.last_results:
             # Detection chart
             detection_chart = create_detection_chart(detected_objects, face_stats, face_matches)
             st.plotly_chart(detection_chart, use_container_width=True)
-            
-            # Confidence pie chart
-            confidence_chart = create_confidence_pie_chart(detected_objects, face_matches)
+
+            # Confidence chart from actual scores
+            confidence_chart = create_confidence_pie_chart(detection_details, face_matches)
             if confidence_chart:
                 st.plotly_chart(confidence_chart, use_container_width=True)
         
         # Detection summary
         st.markdown("### 📋 Detection Summary")
-        if detected_objects:
+        if detection_details:
+            st.success(f"🎯 Found {len(detection_details)} objects with confidence scores!")
+            for attr in detection_details:
+                label = attr.get('label', 'Unknown')
+                confidence = attr.get('confidence_display') or f"{float(attr.get('confidence', 0.0))*100:.1f}%"
+                position = attr.get('position', 'unknown position')
+                size = attr.get('size', 'unknown size')
+                colors = ', '.join(attr.get('colors', [])) if attr.get('colors') else 'N/A'
+                st.markdown(
+                    f"• **{label}** — {confidence} | {size} | {position} | Colors: {colors}"
+                )
+        elif detected_objects:
             st.success(f"🎯 Found {len(detected_objects)} objects!")
             for obj in set(detected_objects):
                 count = detected_objects.count(obj)

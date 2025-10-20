@@ -467,7 +467,69 @@ class NAVADADatabase:
                 
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
-            return {}
+                return {}
+
+    def get_recent_detection_history(self, limit: int = 5) -> List[Dict]:
+        """Fetch recent detection history entries"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT id, detections, face_matches, confidence_scores, created_at
+                    FROM detection_history
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,)
+                )
+                rows = cursor.fetchall()
+
+            history = []
+            for row in rows:
+                history.append({
+                    'id': row[0],
+                    'detections': json.loads(row[1]) if row[1] else [],
+                    'face_matches': json.loads(row[2]) if row[2] else [],
+                    'confidence_scores': json.loads(row[3]) if row[3] else {},
+                    'created_at': row[4]
+                })
+            return history
+
+        except Exception as e:
+            logger.error(f"Failed to fetch detection history: {e}")
+            return []
+
+    def get_recent_knowledge_entries(self, limit: int = 5) -> List[Dict]:
+        """Fetch the most recent knowledge base entries"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT id, entity_type, entity_id, content, created_at
+                    FROM knowledge_base
+                    ORDER BY updated_at DESC, created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,)
+                )
+                rows = cursor.fetchall()
+
+            entries = []
+            for row in rows:
+                entries.append({
+                    'id': row[0],
+                    'entity_type': row[1],
+                    'entity_id': row[2],
+                    'content': row[3],
+                    'created_at': row[4]
+                })
+            return entries
+
+        except Exception as e:
+            logger.error(f"Failed to fetch knowledge entries: {e}")
+            return []
     
     # Training Corrections Methods for Active Learning
     
