@@ -82,9 +82,18 @@ def analyze_object_attributes(image, box, label):
     attributes = {
         'label': label,
         'position': get_position_description(x1, y1, x2, y2, image.shape),
-        'size': get_size_description(x2-x1, y2-y1, image.shape),
+        'size': get_size_description(x2 - x1, y2 - y1, image.shape),
         'colors': get_dominant_colors(object_region, n_colors=2),
-        'confidence': None  # Will be set from detection
+        'confidence': None,  # Will be set from detection
+        'confidence_display': None,
+        'bbox': {
+            'x1': int(x1),
+            'y1': int(y1),
+            'x2': int(x2),
+            'y2': int(y2),
+            'width': int(x2 - x1),
+            'height': int(y2 - y1)
+        }
     }
     
     return attributes
@@ -187,7 +196,8 @@ def detect_objects_enhanced(image, confidence_threshold=CONFIDENCE_THRESHOLD):
             
             # Analyze attributes
             attributes = analyze_object_attributes(image, xyxy, label)
-            attributes['confidence'] = f"{confidence:.2%}"
+            attributes['confidence'] = confidence
+            attributes['confidence_display'] = f"{confidence:.2%}"
             
             detected_objects.append(label)
             detailed_attributes.append(attributes)

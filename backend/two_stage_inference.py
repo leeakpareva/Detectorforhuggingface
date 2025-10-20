@@ -184,11 +184,27 @@ class TwoStageInference:
         
         for i, attr in enumerate(detailed_attributes):
             yolo_label = attr['label']
-            yolo_confidence = float(attr['confidence'].rstrip('%')) / 100.0
-            bbox = attr.get('bbox', [0, 0, 100, 100])
-            
+            confidence_value = attr.get('confidence', 0.0)
+            if isinstance(confidence_value, str):
+                try:
+                    yolo_confidence = float(confidence_value.replace('%', '').strip()) / 100.0
+                except ValueError:
+                    yolo_confidence = 0.0
+            else:
+                yolo_confidence = float(confidence_value)
+
+            bbox_info = attr.get('bbox', [0, 0, 100, 100])
+            if isinstance(bbox_info, dict):
+                x1 = bbox_info.get('x1', 0)
+                y1 = bbox_info.get('y1', 0)
+                x2 = bbox_info.get('x2', x1 + bbox_info.get('width', 0))
+                y2 = bbox_info.get('y2', y1 + bbox_info.get('height', 0))
+            else:
+                x1, y1, x2, y2 = [int(coord) for coord in bbox_info]
+
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
             # Extract object region
-            x1, y1, x2, y2 = [int(coord) for coord in bbox]
             object_crop = image[max(0, y1):min(image.shape[0], y2),
                               max(0, x1):min(image.shape[1], x2)]
             
@@ -213,7 +229,8 @@ class TwoStageInference:
             
             # Update attributes
             attr['label'] = final_label
-            attr['confidence'] = f"{final_confidence:.2%}"
+            attr['confidence'] = float(final_confidence)
+            attr['confidence_display'] = f"{final_confidence:.2%}"
             
             enhanced_attributes.append(attr)
             enhanced_objects.append(final_label)
@@ -239,20 +256,30 @@ class TwoStageInference:
         annotated = image.copy()
         
         for attr in attributes:
-            bbox = attr.get('bbox', [0, 0, 100, 100])
+            bbox_info = attr.get('bbox', [0, 0, 100, 100])
+            if isinstance(bbox_info, dict):
+                x1 = bbox_info.get('x1', 0)
+                y1 = bbox_info.get('y1', 0)
+                x2 = bbox_info.get('x2', x1 + bbox_info.get('width', 0))
+                y2 = bbox_info.get('y2', y1 + bbox_info.get('height', 0))
+            else:
+                x1, y1, x2, y2 = [int(coord) for coord in bbox_info]
+
             label = attr['label']
-            confidence = attr['confidence']
+            confidence_value = attr.get('confidence_display')
+            if not confidence_value:
+                confidence_value = f"{float(attr.get('confidence', 0.0))*100:.1f}%"
             source = attr.get('prediction_source', 'yolo')
-            
-            x1, y1, x2, y2 = [int(coord) for coord in bbox]
-            
+
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
             # Choose color based on source
             if source == 'custom_model':
                 color = (0, 255, 0)  # Green for custom model
-                label_text = f"{label} {confidence} (Custom)"
+                label_text = f"{label} {confidence_value} (Custom)"
             else:
                 color = (255, 0, 0)  # Red for YOLO
-                label_text = f"{label} {confidence}"
+                label_text = f"{label} {confidence_value}"
             
             # Draw bounding box
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)

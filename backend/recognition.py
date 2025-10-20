@@ -12,6 +12,11 @@ from .face_detection import face_detector
 import time
 import uuid
 
+try:
+    import face_recognition  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    face_recognition = None
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -23,23 +28,33 @@ class NAVADARecognition:
         self.face_threshold = 0.6  # Face recognition threshold
         self.object_threshold = 0.5  # Object recognition threshold
         self.session_id = str(uuid.uuid4())
+        self.use_advanced_face_embeddings = face_recognition is not None
         
     def extract_face_encoding(self, face_image: np.ndarray) -> Optional[np.ndarray]:
-        """
-        Extract face encoding for recognition
-        This is a simplified version - in production, use face_recognition library
-        """
+        """Extract face encoding for recognition"""
         try:
-            # Convert to grayscale and resize
+            if self.use_advanced_face_embeddings and face_recognition is not None:
+                if len(face_image.shape) == 2:
+                    rgb_face = cv2.cvtColor(face_image, cv2.COLOR_GRAY2RGB)
+                else:
+                    rgb_face = face_image.copy()
+
+                encodings = face_recognition.face_encodings(rgb_face)
+                if not encodings and len(rgb_face.shape) == 3 and rgb_face.shape[2] == 3:
+                    # Attempt with channel-reversed order if initial try failed
+                    encodings = face_recognition.face_encodings(rgb_face[:, :, ::-1])
+                if encodings:
+                    return np.asarray(encodings[0], dtype=np.float64)
+
+            # Fallback lightweight encoding for environments without face_recognition
             gray = cv2.cvtColor(face_image, cv2.COLOR_RGB2GRAY)
             resized = cv2.resize(gray, (128, 128))
-            
-            # Flatten and normalize as simple encoding
             encoding = resized.flatten().astype(np.float64)
-            encoding = encoding / np.linalg.norm(encoding)  # Normalize
-            
-            return encoding
-            
+            norm = np.linalg.norm(encoding)
+            if norm == 0:
+                return None
+            return encoding / norm
+
         except Exception as e:
             logger.error(f"Face encoding extraction failed: {e}")
             return None
@@ -57,7 +72,7 @@ class NAVADARecognition:
             logger.error(f"Face comparison failed: {e}")
             return 0.0
     
-    def recognize_faces(self, image: np.ndarray) -> Tuple[np.ndarray, List[Dict]]:
+    def recognize_faces(self, image: np.ndarray, face_stats: Dict = None) -> Tuple[np.ndarray, List[Dict]]:
         """
         Recognize faces in image against database
         
@@ -68,16 +83,20 @@ class NAVADARecognition:
             if not db:
                 return image, []
             
-            # Detect faces first
-            annotated_img, face_stats = face_detector.detect_faces(image)
+            detection_results = face_stats
+            annotated_img = image.copy()
+
+            # Detect faces only if not provided
+            if detection_results is None:
+                annotated_img, detection_results = face_detector.detect_faces(annotated_img)
             
             # Get known faces from database
             known_faces = db.get_faces()
             
             recognition_results = []
             
-            if face_stats and face_stats['faces']:
-                for face_info in face_stats['faces']:
+            if detection_results and detection_results.get('faces'):
+                for face_info in detection_results['faces']:
                     # Extract face region
                     pos = face_info['position']
                     x, y, w, h = pos['x'], pos['y'], pos['width'], pos['height']
@@ -159,14 +178,14 @@ class NAVADARecognition:
                 face_img = image[y:y+h, x:x+w]
             else:
                 # Detect face automatically
-                _, face_stats = face_detector.detect_faces(image)
-                
-                if not face_stats or not face_stats['faces']:
+                _, detection_results = face_detector.detect_faces(image)
+
+                if not detection_results or not detection_results['faces']:
                     logger.error("No face detected in image")
                     return False
-                
+
                 # Use first detected face
-                pos = face_stats['faces'][0]['position']
+                pos = detection_results['faces'][0]['position']
                 x, y, w, h = pos['x'], pos['y'], pos['width'], pos['height']
                 face_img = image[y:y+h, x:x+w]
             
@@ -339,16 +358,39 @@ class NAVADARecognition:
             logger.error(f"RAG enhancement failed: {e}")
             return "❌ Enhanced analysis unavailable due to processing error."
     
-    def save_session_data(self, image: np.ndarray, detections: List, 
-                         face_matches: List = None, processing_time: float = 0.0):
+    def save_session_data(self, image: np.ndarray, detections: List,
+                         face_matches: List = None, detection_details: List = None,
+                         processing_time: float = 0.0):
         """Save current session data to database"""
         try:
             if db:
+                confidence_scores = {}
+
+                if detection_details:
+                    confidence_scores['objects'] = [
+                        {
+                            'label': attr.get('label'),
+                            'confidence': float(attr.get('confidence', 0.0))
+                        }
+                        for attr in detection_details
+                    ]
+
+                if face_matches:
+                    confidence_scores['faces'] = [
+                        {
+                            'name': match.get('name'),
+                            'similarity': float(match.get('similarity', 0.0))
+                        }
+                        for match in face_matches if match.get('name')
+                    ]
+
                 db.save_detection_history(
                     session_id=self.session_id,
                     image=image,
                     detections=detections,
                     face_matches=face_matches,
+                    object_matches=detection_details,
+                    confidence_scores=confidence_scores if confidence_scores else None,
                     processing_time=processing_time,
                     metadata={
                         'timestamp': time.time(),
